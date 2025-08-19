@@ -1,0 +1,606 @@
+---
+title: 'Farm exposure: Total female sea lice'
+author: "Bela Klimesova"
+date: "2025-05-05"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+Individual sea lice dataset (SL_Indiv)
+
+```{r}
+SL_Indiv<-read.table("IndividualFishDataset.csv",
+	header = TRUE,sep = ',',fill = TRUE,dec = ".",na.strings = "NA")
+```
+
+```{r}
+library(ggplot2)
+library(glmmTMB)
+suppressMessages(library(lmtest))
+library(performance)
+library(gridExtra)
+library(grid)
+```
+
+# Data adjustment before analysis
+
+The outliers were identified: sites with less than 60 inspections, fish that stayed more than 24 months in the seawater, outliers (sea lice counts higher than 161). In addition,data from full production cycles of fish were kept.
+
+```{r, include=FALSE}
+# Histogram of high sea lice counts
+hist(SL_Indiv$LepeophtheirusSalmonisFemale,ylim=c(0,80))
+
+# Number of observation from fish more than 24 months in the seawater
+nrow(SL_Indiv[SL_Indiv$TimeSea==30,])
+```
+
+```{r}
+# Excluding fish stock transported to sea water in 2023
+SL_Indiv1<-SL_Indiv[!(SL_Indiv$Year.class %in% c("Atlantic Salmon 2023 S1/2",
+                                                 "Atlantic Salmon 2023")),]
+
+# Sites with less than 60 inspections
+Insp<-aggregate(SL_Indiv1$SampleID,list(SL_Indiv1$SiteName),
+                function(x){length(unique(x))})
+Insp_Sel<-Insp[Insp$x<60,]$Group.1
+
+# Fish more than 24 months in the sea water, group '30' includes 25-30 in seawater
+SL_Indiv2<-SL_Indiv1[SL_Indiv1$TimeSea<30,]
+SL_Indiv3<-SL_Indiv2[!(SL_Indiv2$SiteName %in% Insp_Sel),]
+
+# Exclude observation with 7 farms per bay due to low number of data points
+table(SL_Indiv3$Active_Farm)
+unique(SL_Indiv3[SL_Indiv3$Active_Farm==7,]$SiteName)
+
+SL_Indiv4<-SL_Indiv3[SL_Indiv3$Active_Farm<7,]
+
+# Outliers
+SL_Fish<-SL_Indiv4[SL_Indiv4$LepeophtheirusSalmonisFemale<70,]
+```
+
+Comparison of raw and cleaned datasets
+
+```{r}
+# Number of counts per fish
+nrow(SL_Indiv)
+nrow(SL_Fish)
+
+# Number of salmon farms
+length(unique(SL_Indiv$SiteName))
+length(unique(SL_Fish$SiteName))
+```
+
+Exploration of proportion between total mobile and total adult female life stages
+
+```{r}
+# Overall proportion of Total adult females and Total mobiles
+sum(SL_Fish$LepeophtheirusSalmonisFemale)/sum(SL_Fish$LepeophtheirusSalmonisTotal)
+
+# Difference in proportion of months
+Females<-tapply(SL_Fish$LepeophtheirusSalmonisFemale,SL_Fish$NewMonth,mean)
+Mobile<-tapply(SL_Fish$LepeophtheirusSalmonisTotal,SL_Fish$NewMonth,mean)
+Females/Mobile
+```
+
+Adjustment of the format of Fallow period
+
+```{r}
+# Values higher than 25 months were substituted by 25
+hist(SL_Fish$Fallow_month)
+SL_Fish[SL_Fish$Fallow_month>24,]$Fallow_month<-25
+
+table(SL_Fish$Fallow_month)
+```
+
+The format of variables in the dataset (SL_Fish), sea lice values recorded as counts per fish, was adjusted.
+
+```{r}
+SL_Fish$Year_f<-as.factor(SL_Fish$Year)
+SL_Fish$TimeSea_f<-as.factor(SL_Fish$TimeSea)
+SL_Fish$Year_n<-as.numeric(SL_Fish$Year_f)/10
+SL_Fish$Month_n<-as.numeric(SL_Fish$Month)/10
+```
+
+A new dataset (SL_Pen), sea lice values recorded as a mean value per fish per pen, was created. 
+
+```{r}
+SL_Pen<-aggregate(SL_Fish$LepeophtheirusSalmonisFemale,list(
+	SL_Fish$Year_n,SL_Fish$Year,SL_Fish$SiteName,SL_Fish$Month,SL_Fish$Month_n,
+	SL_Fish$NewMonth,SL_Fish$S.R,SL_Fish$Class,SL_Fish$TimeSea,SL_Fish$Date,
+	SL_Fish$New_Comp,SL_Fish$SampleID,SL_Fish$Longitude,SL_Fish$Latitude,
+	SL_Fish$Temp,SL_Fish$Sal,SL_Fish$Oxy1,SL_Fish$Depth_FINAL,SL_Fish$Distance_Mouth,
+	SL_Fish$Length,SL_Fish$Width_Mouth,SL_Fish$Fallow_month,SL_Fish$Active_Farm),mean)
+colnames(SL_Pen)<-c('Year','Year_f','SiteName','Month','Month_n','NewMonth',
+                    'S.R','Class','TimeSea','Date','Company','ID',
+                    'Longitude','Latitude','Temp','Sal','Oxy','Depth',
+                    'Distance_Mouth','Length','Width_Mouth','Fallow',
+                    'Active_Farms','Lep')
+```
+
+The format of variables in the dataset (SL_Pen) was adjusted.
+
+```{r}
+SL_Pen$TimeSea<-as.factor(SL_Pen$TimeSea)
+
+# Number of mean values per farm in the dataset
+nrow(SL_Pen)
+```
+
+A new dataset (SL_Farm), sea lice values recorded as a mean value per fish per farm, was created. 
+
+```{r}
+SL_Farm<-aggregate(SL_Fish$LepeophtheirusSalmonisFemale,list(
+	SL_Fish$Year_n,SL_Fish$Year,SL_Fish$SiteName,SL_Fish$Month,SL_Fish$Month_n,
+	SL_Fish$NewMonth,SL_Fish$Class,SL_Fish$TimeSea,SL_Fish$Date,
+	SL_Fish$New_Comp,SL_Fish$Depth_FINAL,SL_Fish$Distance_Mouth,
+	SL_Fish$Length,SL_Fish$Width_Mouth,SL_Fish$Longitude,SL_Fish$Latitude,
+	SL_Fish$Temp,SL_Fish$Sal,SL_Fish$Oxy1,SL_Fish$Date,SL_Fish$Fallow_month,
+	SL_Fish$Active_Farm),mean)
+colnames(SL_Farm)<-c('Year','Year_f','SiteName','Month','Month_n','NewMonth',
+                     'Class','TimeSea','Date','Company','Depth',
+                     'Distance_Mouth','Length','Width_Mouth','Longitude',
+                     'Latitude','Temp','Sal','Oxy','Date','Fallow',
+                     'Active_Farms','Lep')
+```
+
+The format of variables in the dataset (SL_Farm) was adjusted.
+
+```{r}
+SL_Farm$TimeSea<-as.factor(SL_Farm$TimeSea)
+
+# Number of mean values per farm in the dataset
+nrow(SL_Farm)
+mean(SL_Farm$Lep);sd(SL_Farm$Lep)
+```
+
+The temporal autocorrelation for models at the fish level (count of sea lice per fish), pen level (mean value of sea lice per fish per pen) and at the farm (mean value of sea lice per fish per farm) level were compared.
+
+## Fish level
+
+The SL_Fish dataset (count per fish) was used in a GLM that included all relevant predictors.
+
+```{r}
+m1<-glmmTMB(LepeophtheirusSalmonisFemale~scale(Depth_FINAL)+
+	scale(Distance_Mouth)+scale(Length)+scale(Width_Mouth)+scale(Active_Farms)+
+	scale(Temp)+scale(Sal)+scale(Oxy1)+Year_n+Month_n+TimeSea_f+
+	Class+New_Comp+S.R+scale(Fallow_month)+scale(Longitude)+scale(Latitude),
+	family=nbinom2,data=SL_Fish)
+```
+
+The model was checked for overdispersion, zeroinflation and temporal autocorrelation. 
+
+```{r}
+# Overdispersion
+E2 <- resid(m1, type = "pearson")
+N  <- nrow(SL_Fish)
+p  <- length(coef(m1))   
+sum(E2^2) / (N - p)
+
+# Zero-inflation
+check_zeroinflation(m1)
+
+# Temporal autocorrelation
+dwtest(m1)
+bgtest(m1)
+```
+
+## Pen level
+
+The SL_Pen dataset (mean value per fish per pen) was used in a GLM that included all relevant predictors.
+
+```{r}
+m2<-glmmTMB(Lep~scale(Depth)+scale(Distance_Mouth)+scale(Length)+
+	scale(Width_Mouth)+scale(Active_Farms)+scale(Temp)+scale(Sal)+
+	scale(Oxy)+Year+Month_n+TimeSea+Class+Company+S.R+scale(Fallow)+
+	scale(Longitude)+scale(Latitude),
+	ziformula=~scale(Depth)+scale(Distance_Mouth)+scale(Length)+
+	scale(Width_Mouth)+scale(Active_Farms)+scale(Temp)+scale(Sal)+
+	scale(Oxy)+Year+Month_n+TimeSea+Class+Company+S.R+scale(Fallow)+
+	scale(Longitude)+scale(Latitude),
+	family=ziGamma(link="log"),data=SL_Pen)
+```
+
+The temporal autocorrelation was tested.
+
+```{r}
+dwtest(m2)
+bgtest(m2)
+```
+
+## Farm level
+
+The SL_Farm dataset (mean value per fish per farm) was used in a GLM that included all relevant predictors.
+
+```{r}
+m3<-glmmTMB(Lep~scale(Depth)+scale(Distance_Mouth)+scale(Length)+
+	scale(Width_Mouth)+scale(Active_Farms)+scale(Temp)+scale(Sal)+
+	scale(Oxy)+Year+Month_n+TimeSea+Class+Company+scale(Fallow)+
+	scale(Longitude)+scale(Latitude),
+	ziformula=~scale(Depth)+scale(Distance_Mouth)+scale(Length)+
+	scale(Width_Mouth)+scale(Active_Farms)+scale(Temp)+scale(Sal)+
+	scale(Oxy)+Year+Month_n+TimeSea+Class+Company+scale(Fallow)+
+	scale(Longitude)+scale(Latitude),
+	family=ziGamma(link="log"),data=SL_Farm)
+```
+
+The model was then tested for temporal autocorrelation and the results were compared to the model (m1) at the fish level and m2 at the pen level.
+
+```{r}
+dwtest(m3)
+bgtest(m3)
+```
+
+Lower temporal autocorrelation was detected for the model at the farm level. Based on statistical diagnostics, data availability, and the research question the farm level data (SL_Farm) were used for further analysis.
+
+The model was checked for multicollinearity. 
+
+```{r}
+check_collinearity(m3)
+```
+
+High multicollinearity was detected between length of bay, longitude and latitude and was addressed by removing Longitude as a predictor. 
+
+```{r}
+m3.1<-glmmTMB(Lep~scale(Depth)+scale(Distance_Mouth)+scale(Length)+
+	scale(Width_Mouth)+scale(Active_Farms)+scale(Temp)+scale(Sal)+
+	scale(Oxy)+Year+Month_n+TimeSea+Class+Company+scale(Fallow)+
+	scale(Latitude),
+	ziformula=~scale(Depth)+scale(Distance_Mouth)+scale(Length)+
+	scale(Width_Mouth)+scale(Active_Farms)+scale(Temp)+scale(Sal)+
+	scale(Oxy)+Year+Month_n+TimeSea+Class+Company+scale(Fallow)+
+	scale(Latitude),family=ziGamma(link="log"),data=SL_Farm)
+```
+
+```{r, include=FALSE}
+check_collinearity(m3.1)
+```
+
+The predictors were selected using a backward elimination based on Akaike Information Criterion (AIC).
+
+```{r}
+m3.01<-glmmTMB(Lep~scale(Distance_Mouth)+scale(Length)+
+	scale(Width_Mouth)+scale(Active_Farms)+scale(Temp)+scale(Sal)+
+	scale(Oxy)+Year+Month_n+TimeSea+Class+Company+scale(Fallow)+
+	scale(Latitude),
+	ziformula=~scale(Distance_Mouth)+scale(Length)+
+	scale(Width_Mouth)+scale(Active_Farms)+scale(Temp)+scale(Sal)+
+	scale(Oxy)+Year+Month_n+TimeSea+Class+Company+scale(Fallow)+
+	scale(Latitude),family=ziGamma(link="log"),data=SL_Farm)
+m3.02<-glmmTMB(Lep~scale(Depth)+scale(Length)+
+	scale(Width_Mouth)+scale(Active_Farms)+scale(Temp)+scale(Sal)+
+	scale(Oxy)+Month_n+Year+TimeSea+Class+Company+scale(Fallow)+
+	scale(Latitude),
+	ziformula=~scale(Depth)+scale(Length)+
+	scale(Width_Mouth)+scale(Active_Farms)+scale(Temp)+scale(Sal)+
+	scale(Oxy)+Month_n+Year+TimeSea+Class+Company+scale(Fallow)+
+	scale(Latitude),family=ziGamma(link="log"),data=SL_Farm)
+m3.03<-glmmTMB(Lep~scale(Depth)+scale(Distance_Mouth)+
+	scale(Width_Mouth)+scale(Active_Farms)+scale(Temp)+scale(Sal)+
+	scale(Oxy)+Month_n+Year+TimeSea+Class+Company+scale(Fallow)+
+	scale(Latitude),
+	ziformula=~scale(Depth)+scale(Distance_Mouth)+
+	scale(Width_Mouth)+scale(Active_Farms)+scale(Temp)+scale(Sal)+
+	scale(Oxy)+Month_n+Year+TimeSea+Class+Company+scale(Fallow)+
+	scale(Latitude),family=ziGamma(link="log"),data=SL_Farm)
+m3.04<-glmmTMB(Lep~scale(Depth)+scale(Distance_Mouth)+scale(Length)+
+	scale(Active_Farms)+scale(Temp)+scale(Sal)+
+	scale(Oxy)+Month_n+Year+TimeSea+Class+Company+scale(Fallow)+
+	scale(Latitude),
+	ziformula=~scale(Depth)+scale(Distance_Mouth)+scale(Length)+
+	scale(Active_Farms)+scale(Temp)+scale(Sal)+
+	scale(Oxy)+Month_n+Year+TimeSea+Class+Company+scale(Fallow)+
+	scale(Latitude),family=ziGamma(link="log"),data=SL_Farm)
+m3.05<-glmmTMB(Lep~scale(Depth)+scale(Distance_Mouth)+scale(Length)+
+	scale(Width_Mouth)+scale(Temp)+scale(Sal)+
+	scale(Oxy)+Month_n+Year+TimeSea+Class+Company+scale(Fallow)+
+	scale(Latitude),
+	ziformula=~scale(Depth)+scale(Distance_Mouth)+scale(Length)+
+	scale(Width_Mouth)+scale(Temp)+scale(Sal)+
+	scale(Oxy)+Month_n+Year+TimeSea+Class+Company+scale(Fallow)+
+	scale(Latitude),family=ziGamma(link="log"),data=SL_Farm)
+m3.06<-glmmTMB(Lep~scale(Depth)+scale(Distance_Mouth)+scale(Length)+
+	scale(Width_Mouth)+scale(Active_Farms)+scale(Sal)+
+	scale(Oxy)+Month_n+Year+TimeSea+Class+Company+scale(Fallow)+
+	scale(Latitude),
+	ziformula=~scale(Depth)+scale(Distance_Mouth)+scale(Length)+
+	scale(Width_Mouth)+scale(Active_Farms)+scale(Sal)+
+	scale(Oxy)+Month_n+Year+TimeSea+Class+Company+scale(Fallow)+
+	scale(Latitude),family=ziGamma(link="log"),data=SL_Farm)
+m3.07<-glmmTMB(Lep~scale(Depth)+scale(Distance_Mouth)+scale(Length)+
+	scale(Width_Mouth)+scale(Active_Farms)+scale(Temp)+
+	scale(Oxy)+Year+Month_n+TimeSea+Class+Company+scale(Fallow)+
+	scale(Latitude),
+	ziformula=~scale(Depth)+scale(Distance_Mouth)+scale(Length)+
+	scale(Width_Mouth)+scale(Active_Farms)+scale(Temp)+
+	scale(Oxy)+Year+Month_n+TimeSea+Class+Company+scale(Fallow)+
+	scale(Latitude),family=ziGamma(link="log"),data=SL_Farm)
+m3.08<-glmmTMB(Lep~scale(Depth)+scale(Distance_Mouth)+scale(Length)+
+	scale(Width_Mouth)+scale(Active_Farms)+scale(Temp)+scale(Sal)+
+	Month_n+Year+TimeSea+Class+Company+scale(Fallow)+
+	scale(Latitude),
+	ziformula=~scale(Depth)+scale(Distance_Mouth)+scale(Length)+
+	scale(Width_Mouth)+scale(Active_Farms)+scale(Temp)+scale(Sal)+
+	Month_n+Year+TimeSea+Class+Company+scale(Fallow)+
+	scale(Latitude),family=ziGamma(link="log"),data=SL_Farm)
+m3.09<-glmmTMB(Lep~scale(Depth)+scale(Distance_Mouth)+scale(Length)+
+	scale(Width_Mouth)+scale(Active_Farms)+scale(Temp)+scale(Sal)+
+	scale(Oxy)+Year+TimeSea+Class+Company+scale(Fallow)+
+	scale(Latitude),
+	ziformula=~scale(Depth)+scale(Distance_Mouth)+scale(Length)+
+	scale(Width_Mouth)+scale(Active_Farms)+scale(Temp)+scale(Sal)+
+	scale(Oxy)+Year+TimeSea+Class+Company+scale(Fallow)+
+	scale(Latitude),family=ziGamma(link="log"),data=SL_Farm)
+m3.10<-glmmTMB(Lep~scale(Depth)+scale(Distance_Mouth)+scale(Length)+
+	scale(Width_Mouth)+scale(Active_Farms)+scale(Temp)+scale(Sal)+
+	scale(Oxy)+Month_n+TimeSea+Class+Company+scale(Fallow)+
+	scale(Latitude),
+	ziformula=~scale(Depth)+scale(Distance_Mouth)+scale(Length)+
+	scale(Width_Mouth)+scale(Active_Farms)+scale(Temp)+scale(Sal)+
+	scale(Oxy)+Month_n+TimeSea+Class+Company+scale(Fallow)+
+	scale(Latitude),family=ziGamma(link="log"),data=SL_Farm)
+m3.11<-glmmTMB(Lep~scale(Depth)+scale(Distance_Mouth)+scale(Length)+
+	scale(Width_Mouth)+scale(Active_Farms)+scale(Temp)+scale(Sal)+
+	scale(Oxy)+Month_n+Year+Class+Company+scale(Fallow)+
+	scale(Latitude),
+	ziformula=~scale(Depth)+scale(Distance_Mouth)+scale(Length)+
+	scale(Width_Mouth)+scale(Active_Farms)+scale(Temp)+scale(Sal)+
+	scale(Oxy)+Month_n+Year+Class+Company+scale(Fallow)+
+	scale(Latitude),family=ziGamma(link="log"),data=SL_Farm)
+m3.12<-glmmTMB(Lep~scale(Depth)+scale(Distance_Mouth)+scale(Length)+
+	scale(Width_Mouth)+scale(Active_Farms)+scale(Temp)+scale(Sal)+
+	scale(Oxy)+Month_n+Year+TimeSea+Company+scale(Fallow)+
+	scale(Latitude),
+	ziformula=~scale(Depth)+scale(Distance_Mouth)+scale(Length)+
+	scale(Width_Mouth)+scale(Active_Farms)+scale(Temp)+scale(Sal)+
+	scale(Oxy)+Month_n+Year+TimeSea+Company+scale(Fallow)+
+	scale(Latitude),family=ziGamma(link="log"),data=SL_Farm)
+m3.13<-glmmTMB(Lep~scale(Depth)+scale(Distance_Mouth)+scale(Length)+
+	scale(Width_Mouth)+scale(Active_Farms)+scale(Temp)+scale(Sal)+
+	scale(Oxy)+Month_n+Year+TimeSea+Class+scale(Fallow)+
+	scale(Latitude),
+	ziformula=~scale(Depth)+scale(Distance_Mouth)+scale(Length)+
+	scale(Width_Mouth)+scale(Active_Farms)+scale(Temp)+scale(Sal)+
+	scale(Oxy)+Month_n+Year+TimeSea+Class+scale(Fallow)+
+	scale(Latitude),family=ziGamma(link="log"),data=SL_Farm)
+m3.14<-glmmTMB(Lep~scale(Depth)+scale(Distance_Mouth)+scale(Length)+
+	scale(Width_Mouth)+scale(Active_Farms)+scale(Temp)+scale(Sal)+
+	scale(Oxy)+Month_n+Year+TimeSea+Class+Company+
+	scale(Latitude),
+	ziformula=~scale(Depth)+scale(Distance_Mouth)+scale(Length)+
+	scale(Width_Mouth)+scale(Active_Farms)+scale(Temp)+scale(Sal)+
+	scale(Oxy)+Month_n+Year+TimeSea+Class+Company+
+	scale(Latitude),family=ziGamma(link="log"),data=SL_Farm)
+m3.15<-glmmTMB(Lep~scale(Depth)+scale(Distance_Mouth)+scale(Length)+
+	scale(Width_Mouth)+scale(Active_Farms)+scale(Temp)+scale(Sal)+
+	scale(Oxy)+Month_n+Year+TimeSea+Class+Company+scale(Fallow),
+	ziformula=~scale(Depth)+scale(Distance_Mouth)+scale(Length)+
+	scale(Width_Mouth)+scale(Active_Farms)+scale(Temp)+scale(Sal)+
+	scale(Oxy)+Month_n+Year+TimeSea+Class+Company+scale(Fallow),
+	family=ziGamma(link="log"),data=SL_Farm)
+
+AIC(m3.1,m3.01,m3.02,m3.03,m3.04,m3.05,m3.06,m3.07,
+    m3.08,m3.09,m3.10,m3.11,m3.12,m3.13,m3.14,m3.15)
+BIC(m3.1,m3.01,m3.02,m3.03,m3.04,m3.05,m3.06,m3.07,
+    m3.08,m3.09,m3.10,m3.11,m3.12,m3.13,m3.14,m3.15)
+```
+
+Best fit was determined for the models m3.06 and m3.07 without temperature and salinity. 
+A new model was fitted excluding both of these predictors. 
+
+```{r}
+m3.2<-glmmTMB(Lep~scale(Depth)+scale(Distance_Mouth)+scale(Length)+
+	scale(Width_Mouth)+scale(Active_Farms)+scale(Oxy)+Year+Month_n+
+	TimeSea+Class+Company+scale(Fallow)+scale(Latitude),
+	ziformula=~scale(Depth)+scale(Distance_Mouth)+scale(Length)+
+	scale(Width_Mouth)+scale(Active_Farms)+scale(Oxy)+Year+
+	Month_n+TimeSea+Class+Company+scale(Fallow)+
+	scale(Latitude),family=ziGamma(link="log"),data=SL_Farm)
+
+AIC(m3.1,m3.06,m3.07,m3.2)
+```
+
+The final model was tested for overdispersion and the explained variance was determined. 
+
+```{r}
+# Overdispersion
+E2 <- resid(m3.2, type = "pearson")
+N  <- nrow(SL_Farm)
+p  <- length(coef(m3.2))   
+sum(E2^2) / (N - p)
+
+# Explained variance
+model_performance(m3.2)
+```
+
+The results of the final model were checked.
+
+```{r}
+summary(m3.2)
+car::Anova(m3.2)
+```
+
+## Visualization of results
+
+The sea lice values for all levels of predictors and length of bay with the confidential interval were predicted.
+
+```{r}
+newdata1<- data.frame(
+	Depth= mean(scale(SL_Farm$Depth)),
+	Distance_Mouth= mean(scale(SL_Farm$Distance_Mouth)),
+	Length= rep(seq(from = min(SL_Farm$Length), 
+	                to = max(SL_Farm$Length),length.out = 100),72),
+	Width_Mouth= mean(scale(SL_Farm$Width_Mouth)),
+	Active_Farms= mean(scale(SL_Farm$Active_Farms)),
+	Oxy=mean(as.vector(SL_Farm$Oxy)),
+	Year= mean(as.vector(SL_Farm$Year)),
+	Month_n=mean(as.vector(SL_Farm$Month_n)),
+	TimeSea=factor(rep(rep(rep(rep(1:4),3),2),each=100),levels=1:4,
+	               labels=levels(SL_Farm$TimeSea)),
+	Class= factor(rep(rep(1:2,36),each=100),levels=1:2,
+	              labels=levels(as.factor(SL_Farm$Class))),
+	Company=factor(rep(rep(rep(1:3,12),2),each=100),levels=1:3,
+	               labels=levels(as.factor(SL_Farm$Company))),
+	Fallow=mean(scale(SL_Farm$Fallow)),
+	Latitude=mean(SL_Farm$Latitude))
+
+newdata1 <- cbind(newdata1, predict(m3.2, newdata1, type = "link",
+                                    se.fit=TRUE,re.form=NA))
+
+newdata1 <- within(newdata1, {
+  Abun<- exp(fit)
+  LL <- exp(fit - 1.96 * se.fit)
+  UL <- exp(fit + 1.96 * se.fit)
+})
+```
+
+Mean values of sea lice year were calculated from predicted sea lice counts and the data was visualized. 
+
+```{r}
+A<-aggregate(newdata1$Abun,list(newdata1$Length),mean)
+B<-aggregate(newdata1$LL,list(newdata1$Length),mean)
+C<-aggregate(newdata1$UL,list(newdata1$Length),mean)
+colnames(A)<-c('Length','Abun')
+colnames(B)<-c('Length','LL')
+colnames(C)<-c('Length','UL')
+AA<-merge(A,B, by="Length")
+BB<-merge(AA,C, by="Length")
+
+P1<-ggplot(BB, aes(Length,Abun)) +
+	geom_ribbon(aes(ymin=LL,ymax=UL),colour='grey80',fill= "grey80", alpha = 0.5)+
+  geom_point()+
+	geom_line(linewidth = 1.5)+
+	labs(x = "Length of bay [km]", y = "")+ 
+	theme_minimal(base_size = 12) + 
+	ylim(0,7)+
+	theme(legend.position = "none")
+```
+
+The sea lice values for all levels of predictors and width of bay mouth with the confidential interval were predicted.
+
+```{r}
+newdata1<- data.frame(
+	Depth= mean(scale(SL_Farm$Depth)),
+	Distance_Mouth= mean(scale(SL_Farm$Distance_Mouth)),
+	Length=  mean(scale(SL_Farm$Length)),
+	Width_Mouth= rep(seq(from = min(SL_Farm$Width_Mouth), 
+	                     to = max(SL_Farm$Width_Mouth),length.out = 100),72),
+	Active_Farms= mean(scale(SL_Farm$Active_Farms)),
+	Oxy=mean(as.vector(SL_Farm$Oxy)),
+	Year= mean(as.vector(SL_Farm$Year)),
+	Month_n=mean(as.vector(SL_Farm$Month_n)),
+	TimeSea=factor(rep(rep(rep(rep(1:4),3),2),each=100),levels=1:4,
+	               labels=levels(SL_Farm$TimeSea)),
+	Class= factor(rep(rep(1:2,36),each=100),levels=1:2,
+	              labels=levels(as.factor(SL_Farm$Class))),
+	Company=factor(rep(rep(rep(1:3,12),2),each=100),levels=1:3,
+	               labels=levels(as.factor(SL_Farm$Company))),
+	Fallow=mean(scale(SL_Farm$Fallow)),
+	Latitude=mean(SL_Farm$Latitude))
+
+newdata1 <- cbind(newdata1, predict(m3.2, newdata1, type = "link",
+                                    se.fit=TRUE,re.form=NA))
+
+newdata1 <- within(newdata1, {
+  Abun<- exp(fit)
+  LL <- exp(fit - 1.96 * se.fit)
+  UL <- exp(fit + 1.96 * se.fit)
+})
+
+```
+
+Mean values of sea lice year were calculated from predicted sea lice counts and the data was visualized. 
+
+```{r}
+A<-aggregate(newdata1$Abun,list(newdata1$Width_Mouth),mean)
+B<-aggregate(newdata1$LL,list(newdata1$Width_Mouth),mean)
+C<-aggregate(newdata1$UL,list(newdata1$Width_Mouth),mean)
+colnames(A)<-c('Width_Mouth','Abun')
+colnames(B)<-c('Width_Mouth','LL')
+colnames(C)<-c('Width_Mouth','UL')
+AA<-merge(A,B, by="Width_Mouth")
+BB<-merge(AA,C, by="Width_Mouth")
+
+P2<-ggplot(BB, aes(Width_Mouth,Abun)) +
+  geom_ribbon(aes(ymin=LL,ymax=UL),colour='grey80',fill= "grey80", alpha = 0.5)+
+	geom_point()+
+	geom_line(linewidth =2)+
+	labs(x = "Width of mouth [km]", y = "")+ 
+	ylim(0,7)+
+	theme_minimal(base_size =12) + 
+	theme(legend.position = "none",
+		axis.text.y=element_blank())
+```
+
+The sea lice values for all levels of predictors and dissolved oxygen with the confidential interval were predicted.
+
+```{r}
+newdata1<- data.frame(
+	Depth= mean(scale(SL_Farm$Depth)),
+	Distance_Mouth= mean(scale(SL_Farm$Distance_Mouth)),
+	Length=  mean(scale(SL_Farm$Length)),
+	Width_Mouth=mean(as.vector(SL_Farm$Width_Mouth)),
+	Active_Farms= mean(scale(SL_Farm$Active_Farms)),
+	Temp=mean(as.vector(SL_Farm$Temp)),
+	Oxy=rep(seq(from = min(SL_Farm$Oxy), to = max(SL_Farm$Oxy),length.out = 100),72),
+	Year= mean(as.vector(SL_Farm$Year)),
+	Month_n=mean(as.vector(SL_Farm$Month_n)),
+	TimeSea=factor(rep(rep(rep(rep(1:4),3),2),each=100),levels=1:4,
+	               labels=levels(SL_Farm$TimeSea)),
+	Class= factor(rep(rep(1:2,36),each=100),levels=1:2,
+	              labels=levels(as.factor(SL_Farm$Class))),
+	Company=factor(rep(rep(rep(1:3,12),2),each=100),levels=1:3,
+	               labels=levels(as.factor(SL_Farm$Company))),
+	Fallow=mean(scale(SL_Farm$Fallow)),
+	Latitude=mean(SL_Farm$Latitude))
+
+newdata1 <- cbind(newdata1, predict(m3.2, newdata1, type = "link",
+                                    se.fit=TRUE,re.form=NA))
+
+newdata1 <- within(newdata1, {
+  Abun<- exp(fit)
+  LL <- exp(fit - 1.96 * se.fit)
+  UL <- exp(fit + 1.96 * se.fit)
+})
+```
+
+Mean values of sea lice year were calculated from predicted sea lice counts and the data was visualized. 
+
+```{r}
+A<-aggregate(newdata1$Abun,list(newdata1$Oxy),mean)
+B<-aggregate(newdata1$LL,list(newdata1$Oxy),mean)
+C<-aggregate(newdata1$UL,list(newdata1$Oxy),mean)
+colnames(A)<-c('Oxy','Abun')
+colnames(B)<-c('Oxy','LL')
+colnames(C)<-c('Oxy','UL')
+AA<-merge(A,B, by="Oxy")
+BB<-merge(AA,C, by="Oxy")
+
+P3<-ggplot(BB, aes(Oxy,Abun)) +
+	geom_ribbon(aes(ymin=LL,ymax=UL),colour='grey80',fill= "grey80", alpha = 0.5)+
+  geom_point()+
+	geom_line(linewidth = 1.5)+
+	xlab("Dissolved oxygen [%]")+
+	ylab('')+	
+	ylim(0,7)+
+	theme_minimal(base_size = 12) + 
+	theme(legend.position = "none",
+		axis.text.y=element_blank())
+```
+
+All three graphs were plotted together. 
+
+```{r}
+grid.arrange(P1,P2,P3,ncol = 3,
+	left =textGrob('Total female sea lice abundance \n [mean per farm]',
+	               gp=gpar(fontsize=15),rot=90))
+
+grid.text("a",x=unit(0.1, "npc"),y=unit(.95, "npc"),
+          gp=gpar(fontsize=15, col="black"))
+grid.text("b",x=unit(0.42, "npc"),y=unit(.95, "npc"),
+          gp=gpar(fontsize=15, col="black"))
+grid.text("c",x=unit(0.71, "npc"),y=unit(.95, "npc"),
+          gp=gpar(fontsize=15, col="black"))
+```

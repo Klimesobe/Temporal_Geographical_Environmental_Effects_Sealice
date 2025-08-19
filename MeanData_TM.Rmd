@@ -1,0 +1,423 @@
+---
+title: "Long-term trends: Total mobile sea lice"
+author: "Bela Klimesova"
+date: "2025-04-29"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+Mean sea lice dataset (SL_Mean)
+
+```{r}
+SL_Mean<-read.table("MeanDataset.csv",
+	header = TRUE,sep = ',',fill = TRUE,dec = ".",na.strings = "NA")
+```
+
+```{r}
+library(ggplot2)
+library(glmmTMB)
+suppressMessages(library(lmtest))
+library(performance)
+library(gridExtra)
+library(grid)
+```
+
+# Data adjustment before analysis
+
+The outliers were identified: sites with less than 120 inspections, fish that stayed more than 24 months in the seawater, and outliers (total mobile sea lice mean values higher than 90).
+
+```{r, include=FALSE}
+# Histogram of high sea lice counts
+hist(SL_Mean$MeanLepTotal,ylim=c(0,100))
+
+# Number of observation from fish more than 24 months in the seawater, group '30' includes 25-30 in seawater
+nrow(SL_Mean[SL_Mean$TimeSea==30,])
+```
+
+```{r}
+# Excluding fish stock transported to sea water in 2023
+SL_Mean1<-SL_Mean[!(SL_Mean$New_Class %in% c("2023 S1/2","2023 S1")),]
+
+# Sites with less than 120 inspections
+Insp<-aggregate(SL_Mean1$SplDate,list(SL_Mean1$SiteName),function(x){length(unique(x))})
+Insp_Sel<-Insp[Insp$x<120,]$Group.1
+
+# Fish more than 24 months in the sea water, group '30' includes 25-30 in seawater
+SL_Mean2<-SL_Mean1[SL_Mean1$TimeSea<30,]
+SL_Mean3<-SL_Mean2[!(SL_Mean2$SiteName %in% Insp_Sel),]
+
+# Outliers
+SL_Pen<-SL_Mean3[SL_Mean3$MeanLepTotal<90,]
+```
+
+Comparison of raw and cleaned datasets
+
+```{r}
+# Number of counts per fish
+nrow(SL_Mean)
+nrow(SL_Pen)
+
+# Number of salmon farms
+length(unique(SL_Mean$SiteName))
+length(unique(SL_Pen$SiteName))
+```
+
+```{r}
+# Mean and sd of sea lice counts
+mean(SL_Pen$MeanLepTotal);sd(SL_Pen$MeanLepTotal)
+```
+
+The format of variables in the dataset (SL_Pen), sea lice values recorded as a mean value per fish per farm, was adjusted. 
+
+```{r}
+SL_Pen$Year_f<-as.factor(SL_Pen$Year)
+SL_Pen$TimeSea_f<-as.factor(SL_Pen$TimeSea)
+SL_Pen$Year_n<-as.numeric(SL_Pen$Year_f)/10
+SL_Pen$NewMonth<-factor(SL_Pen$NewMonth,levels=c('Jan/Dec','Feb','Mar1','Mar2',
+	'Apr1','Apr2','May1','May2','Jun','Jul','Aug','Sep','Oct','Nov'))
+```
+
+A new dataset (SL_Farm), sea lice values recorded as a mean value per fish per farm, was created. 
+
+```{r}
+SL_Farm<-aggregate(SL_Pen$MeanLepTotal,list(SL_Pen$Year,SL_Pen$Year_f,
+              SL_Pen$SiteName,SL_Pen$NewMonth,SL_Pen$Latitude,SL_Pen$Longitude,
+              SL_Pen$Month,SL_Pen$Class,SL_Pen$TimeSea_f,SL_Pen$SplDate),mean)
+colnames(SL_Farm)<-c('Year','Year_f','SiteName','NewMonth','Latitude','Longitude',
+                     'Month','Class','TimeSea','Date','Lep')
+```
+
+The format of variables in the dataset (SL_Farm) was adjusted.
+
+```{r}
+SL_Farm$TimeSea<-as.factor(SL_Farm$TimeSea)
+
+# Number of mean values per farm in the dataset
+nrow(SL_Farm)
+```
+
+# Year as categorical predictor
+
+The temporal autocorrelation for model at the pen (mean value of sea lice per fish per pen) and at the farm (mean value of sea lice per fish per farm) level were compared.
+
+## Pen level
+
+The SL_Pen dataset (mean value per fish per pen) was used in a GLM that included all relevant predictors.
+
+```{r}
+m1<-glmmTMB(MeanLepTotal~Class+Year_f+NewMonth+TimeSea_f+CageType+scale(Latitude)+
+              scale(Longitude)+(1|SiteName),ziformula=~Class+Year_f+NewMonth+
+              TimeSea_f+CageType+scale(Latitude)+scale(Longitude),
+              family=ziGamma(link="log"),data=SL_Pen)
+```
+
+The temporal autocorrelation was tested.
+
+```{r}
+dwtest(m1)
+bgtest(m1)
+```
+
+## Farm level
+
+The SL_Farm dataset (mean value per fish per farm) was used in a GLM that included all relevant predictors.
+
+```{r}
+m2<-glmmTMB(Lep~Year_f+NewMonth+TimeSea+Class+scale(Latitude)+
+            scale(Longitude)+(1|SiteName),ziformula=~
+            Year_f+NewMonth+TimeSea+Class+scale(Latitude)+scale(Longitude),
+            family=ziGamma(link="log"),data=SL_Farm)
+```
+
+The model was then tested for temporal autocorrelation and the results were compared to the model (m1) at the pen level.
+
+```{r}
+dwtest(m2)
+bgtest(m2)
+```
+
+Lower temporal autocorrelation was detected for the model at the pen level. Based on statistical diagnostics, data availability, and the research question the pen level data (SL_Pen) were used for further analysis.
+
+The model was checked for multicollinearity. 
+
+```{r}
+check_collinearity(m1)
+```
+
+The predictors were selected using a backwards step-wise approach.
+
+```{r}
+m1.1<-glmmTMB(MeanLepTotal~NewMonth+TimeSea_f+Class+CageType+scale(Latitude)+
+              scale(Longitude)+(1|SiteName),ziformula=~NewMonth+
+              TimeSea_f+Class+CageType+scale(Latitude)+scale(Longitude),
+              family=ziGamma(link="log"),data=SL_Pen)
+m1.2<-glmmTMB(MeanLepTotal~Year_f+TimeSea_f+Class+CageType+scale(Latitude)+
+              scale(Longitude)+(1|SiteName),ziformula=~Year_f+
+              TimeSea_f+Class+CageType+scale(Latitude)+scale(Longitude),
+              family=ziGamma(link="log"),data=SL_Pen)
+m1.3<-glmmTMB(MeanLepTotal~Year_f+NewMonth+Class+CageType+scale(Latitude)+
+              scale(Longitude)+(1|SiteName),ziformula=~Year_f+NewMonth+
+              Class+CageType+scale(Latitude)+scale(Longitude),
+              family=ziGamma(link="log"),data=SL_Pen)
+m1.4<-glmmTMB(MeanLepTotal~Year_f+NewMonth+TimeSea_f+CageType+scale(Latitude)+
+              scale(Longitude)+(1|SiteName),ziformula=~Year_f+NewMonth+
+              TimeSea_f+CageType+scale(Latitude)+scale(Longitude),
+              family=ziGamma(link="log"),data=SL_Pen)
+m1.5<-glmmTMB(MeanLepTotal~Year_f+NewMonth+TimeSea_f+Class+scale(Latitude)+
+              scale(Longitude)+(1|SiteName),ziformula=~Year_f+NewMonth+
+              TimeSea_f+Class+scale(Latitude)+scale(Longitude),
+              family=ziGamma(link="log"),data=SL_Pen)
+m1.6<-glmmTMB(MeanLepTotal~Year_f+NewMonth+TimeSea_f+Class+CageType+
+              scale(Longitude)+(1|SiteName),ziformula=~Year_f+NewMonth+
+              TimeSea_f+Class+CageType+scale(Longitude),
+              family=ziGamma(link="log"),data=SL_Pen)
+m1.7<-glmmTMB(MeanLepTotal~Year_f+NewMonth+TimeSea_f+Class+CageType+scale(Latitude)+
+              (1|SiteName),ziformula=~Year_f+NewMonth+
+              TimeSea_f+Class+CageType+scale(Latitude),
+              family=ziGamma(link="log"),data=SL_Pen)
+
+AIC(m1,m1.1,m1.2,m1.3,m1.4,m1.5,m1.6,m1.7)
+BIC(m1,m1.1,m1.2,m1.3,m1.4,m1.5,m1.6,m1.7)
+
+```
+
+Best fit was determined for the model m1.5 without CageType. 
+The final model was then tested for overdispersion and the explained variance was determined. 
+
+```{r}
+# Overdispersion
+E2 <- resid(m1.5, type = "pearson")
+N  <- nrow(SL_Pen)
+p  <- length(coef(m1.5))   
+sum(E2^2) / (N - p)
+
+# Explained variance
+r2_nakagawa(m1.5)
+```
+
+The results of the final model were checked.
+
+```{r}
+summary(m1.5)
+car::Anova(m1.5)
+```
+
+## Visualization of results
+
+The sea lice values for all levels of predictors with the confidential interval were predicted.
+
+```{r}
+newdata2 <- data.frame(
+	Class=factor(rep(rep(rep(rep(rep(1:2),13),31),14),4),levels=1:2,
+	             labels=levels(as.factor(SL_Pen$Class))),
+	Year_f=factor(rep(rep(rep(1:31,each=26),14),4),levels=1:31,
+	              labels=levels(SL_Pen$Year_f)),
+	NewMonth=factor(rep(rep(1:14,each=806),4),levels=1:14,
+	                labels=levels(SL_Pen$NewMonth)),
+	TimeSea_f=factor(rep(1:4,each=11284),levels = 1:4,
+	                 labels =levels(SL_Pen$TimeSea_f)),
+	Latitude=mean(SL_Pen$Latitude),
+	Longitude=mean(SL_Pen$Longitude))
+
+newdata2 <- cbind(newdata2, predict(m1.5, newdata2, type = "link", se.fit=TRUE,re.form=NA))
+
+newdata2 <- within(newdata2, {
+  Abun<- exp(fit)
+  LL <- exp(fit - 1.96 * se.fit)
+  UL <- exp(fit + 1.96 * se.fit)
+})
+
+```
+
+Mean values of sea lice year were calculated from predicted sea lice counts.
+
+```{r}
+A<-aggregate(newdata2$Abun,list(newdata2$Year_f),mean)
+B<-aggregate(newdata2$LL,list(newdata2$Year_f),mean)
+C<-aggregate(newdata2$UL,list(newdata2$Year_f),mean)
+colnames(A)<-c('Year','Abun')
+colnames(B)<-c('Year','LL')
+colnames(C)<-c('Year','UL')
+AA<-merge(A,B, by="Year")
+BB<-merge(AA,C, by="Year")
+```
+
+The final data were visualized together with the raw data for every year at the level of farm
+
+```{r}
+BB$Year<-as.numeric(1993:2023)
+
+# Predicted sea lice counts
+A<-ggplot(BB, aes(Year, Abun)) +
+	geom_ribbon(aes(ymin = LL, ymax = UL), colour = 'grey80', fill = "grey80") +
+	geom_point() +
+	geom_line(linewidth = 1.5) +
+	ylab('[annual mean per fish per pen]')+
+	theme_minimal(base_size = 10) +
+	theme(legend.position = "none",
+		panel.grid.minor = element_blank()) +
+	scale_x_continuous(name = "Year",limits = c(1992.5, 2023.5),
+		breaks = seq(1993, 2023, 5)) +
+	coord_cartesian(xlim = c(1993, 2023))
+
+# Observed sea lice counts
+SL_Pen$Year <- as.numeric(as.character(SL_Pen$Year_f))
+B<-ggplot(SL_Pen, aes(x = Year, y = MeanLepTotal, group = Year)) +
+	geom_boxplot() +
+	scale_y_sqrt() +
+	ylab('[sqrt mean per fish per pen]')+
+	theme_minimal(base_size = 10) +
+	theme(legend.position = "none",
+		axis.title.x = element_blank(),
+		axis.text.x = element_blank(),
+		panel.grid.minor = element_blank()) +
+	scale_x_continuous(limits = c(1992.5, 2023.5),
+		breaks = seq(1993, 2023, 5)) +
+	coord_cartesian(xlim = c(1993, 2023))
+
+grid.arrange(B,A,ncol = 1,
+  heights = c(1, 1.2),left = textGrob("Total mobile sea lice abundance",
+    gp = gpar(fontsize = 13),rot = 90))
+
+# Adding labels A and B
+grid.text("a", x = unit(0.10, "npc"), y = unit(.968, "npc"),
+          gp = gpar(fontsize = 13, col = "black"))
+grid.text("b", x = unit(0.10, "npc"), y = unit(.51, "npc"),
+          gp = gpar(fontsize = 13, col = "black"))
+```
+
+The predicted values were used to calculate mean values per month to visualize the seasonal changes in sea lice abundance.
+
+```{r}
+newdata2$NewMonth_n<-substr(as.character(newdata2$NewMonth),1,3)
+newdata2[newdata2$NewMonth_n=='Jan',]$NewMonth_n<-'Jan/Dec'
+
+A<-aggregate(newdata2$Abun,list(newdata2$NewMonth_n),mean)
+B<-aggregate(newdata2$LL,list(newdata2$NewMonth_n),mean)
+C<-aggregate(newdata2$UL,list(newdata2$NewMonth_n),mean)
+colnames(A)<-c('Month','Abun')
+colnames(B)<-c('Month','LL')
+colnames(C)<-c('Month','UL')
+AA<-merge(A,B, by="Month")
+BB<-merge(AA,C, by="Month")
+
+# Common x-axis labels
+BB$Month<-factor(BB$Month,levels=c("Jan/Dec","Feb","Mar",
+	"Apr","May","Jun","Jul","Aug","Sep","Oct","Nov"))
+BLUE <- data.frame(X=c('Mar','Apr','May'), Y = 12)
+
+# Predicted sea lice counts
+ggplot(data=BB,aes(Month,Abun,group=1))+
+	geom_area(aes(x=X,y=Y),data=BLUE,alpha=0.3,fill="grey80") +
+	geom_ribbon(aes(ymin = LL, ymax=UL),colour ='grey80',fill="grey80") +
+	geom_point() +
+	geom_line(linewidth = 1.1)+
+	theme_minimal(base_size = 15) + 
+	ylab('Total mobile sea lice abundance \n [monthly mean per fish per pen]')+
+	xlab('Month')+
+	ylim(0,12.5)
+```
+
+# Year as numeric
+
+## Pen level
+
+The dataset at the pen level was used to fit a model including all predictors. 
+
+```{r}
+m3<-glmmTMB(MeanLepTotal~Year+NewMonth+TimeSea_f+Class+CageType+scale(Latitude)+
+              scale(Longitude)+(1|SiteName),ziformula=~Year+NewMonth+
+              TimeSea_f+Class+CageType+scale(Latitude)+scale(Longitude),
+            family=ziGamma(link="log"),data=SL_Pen)
+```
+
+The temporal autocorrelation was determined.
+
+```{r}
+dwtest(m3)
+bgtest(m3)
+```
+
+## Farm level
+
+The dataset at the farm level was used to fit a model including all predictors.
+
+```{r}
+m4<-glmmTMB(Lep~Year+NewMonth+TimeSea+Class+scale(Latitude)+
+              scale(Longitude)+(1|SiteName),ziformula=~Year+
+              NewMonth+TimeSea+Class+scale(Latitude)+scale(Longitude),
+              family=ziGamma(link="log"),data=SL_Farm)
+```
+
+The temporal autocorrelation was determined and compared to the model at the pen level.
+
+```{r}
+dwtest(m4)
+bgtest(m4)
+```
+
+Lower temporal autocorrelation was detected for the model at the pen level. Based on statistical diagnostics, data availability, and the research question the pen level data (SL_Pen) were used for further analysis.
+
+```{r}
+check_collinearity(m3)
+```
+
+The predictors were selected using a backwards step-wise approach.
+
+```{r}
+m3.1<-glmmTMB(MeanLepTotal~NewMonth+TimeSea_f+Class+CageType+scale(Latitude)+
+              scale(Longitude)+(1|SiteName),ziformula=~NewMonth+
+              TimeSea_f+Class+CageType+scale(Latitude)+scale(Longitude),
+            family=ziGamma(link="log"),data=SL_Pen)
+m3.2<-glmmTMB(MeanLepTotal~Year+TimeSea_f+Class+CageType+scale(Latitude)+
+              scale(Longitude)+(1|SiteName),ziformula=~Year+
+              TimeSea_f+Class+CageType+scale(Latitude)+scale(Longitude),
+            family=ziGamma(link="log"),data=SL_Pen)
+m3.3<-glmmTMB(MeanLepTotal~Year+NewMonth+Class+CageType+scale(Latitude)+
+              scale(Longitude)+(1|SiteName),ziformula=~Year+NewMonth+
+              Class+CageType+scale(Latitude)+scale(Longitude),
+            family=ziGamma(link="log"),data=SL_Pen)
+m3.4<-glmmTMB(MeanLepTotal~Year+NewMonth+TimeSea_f+CageType+scale(Latitude)+
+              scale(Longitude)+(1|SiteName),ziformula=~Year+NewMonth+
+              TimeSea_f+CageType+scale(Latitude)+scale(Longitude),
+            family=ziGamma(link="log"),data=SL_Pen)
+m3.5<-glmmTMB(MeanLepTotal~Year+NewMonth+TimeSea_f+Class+scale(Latitude)+
+              scale(Longitude)+(1|SiteName),ziformula=~Year+NewMonth+
+              TimeSea_f+Class+scale(Latitude)+scale(Longitude),
+            family=ziGamma(link="log"),data=SL_Pen)
+m3.6<-glmmTMB(MeanLepTotal~Year+NewMonth+TimeSea_f+Class+CageType+
+              scale(Longitude)+(1|SiteName),ziformula=~Year+NewMonth+
+              TimeSea_f+Class+CageType+scale(Longitude),
+            family=ziGamma(link="log"),data=SL_Pen)
+m3.7<-glmmTMB(MeanLepTotal~Year+NewMonth+TimeSea_f+Class+CageType+scale(Latitude)+
+              (1|SiteName),ziformula=~Year+NewMonth+
+              TimeSea_f+Class+CageType+scale(Latitude),
+            family=ziGamma(link="log"),data=SL_Pen)
+
+AIC(m3,m3.1,m3.2,m3.3,m3.4,m3.5,m3.6,m3.7)
+BIC(m3,m3.1,m3.2,m3.3,m3.4,m3.5,m3.6,m3.7)
+```
+
+Best fit was determined for the full model m3 including all predictors. 
+The final model was then tested for overdispersion and the explained variance was determined. 
+
+```{r}
+# Overdispersion
+E2 <- resid(m3, type = "pearson")
+N  <- nrow(SL_Pen)
+p  <- length(coef(m3))   
+sum(E2^2) / (N - p)
+
+# Explained variance
+r2_nakagawa(m3)
+```
+
+The results of the final model were checked.
+
+```{r}
+summary(m3)
+car::Anova(m3)
+```
